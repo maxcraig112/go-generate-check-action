@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to bump."
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    name: Verify
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Tag and release
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
+
+          if [ -z "$latest" ]; then
+            major=0; minor=0; patch=0
+          else
+            IFS='.' read -r major minor patch <<< "$latest"
+          fi
+
+          case "$BUMP" in
+            major)
+              major=$((major + 1)); minor=0; patch=0
+              ;;
+            minor)
+              minor=$((minor + 1)); patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "::error::unknown bump type '$BUMP'"
+              exit 1
+              ;;
+          esac
+
+          new_version="v${major}.${minor}.${patch}"
+          new_major="v${major}"
+
+          echo "Bumping $BUMP: previous=${latest:-none} new=${new_version}"
+
+          {
+            echo "new_version=${new_version}"
+            echo "new_major=${new_major}"
+            echo "previous_version=${latest:+v$latest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create and push version tag
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
+          git push origin "$NEW_VERSION"
+
+      - name: Move major version tag
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          NEW_MAJOR: ${{ steps.version.outputs.new_major }}
+        run: |
+          set -euo pipefail
+          git tag -f -a "$NEW_MAJOR" -m "Release $NEW_VERSION"
+          git push --force origin "$NEW_MAJOR"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          PREVIOUS_VERSION: ${{ steps.version.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREVIOUS_VERSION" ]; then
+            gh release create "$NEW_VERSION" \
+              --title "$NEW_VERSION" \
+              --generate-notes \
+              --notes-start-tag "$PREVIOUS_VERSION"
+          else
+            gh release create "$NEW_VERSION" \
+              --title "$NEW_VERSION" \
+              --generate-notes
+          fi
+
+      - name: Marketplace publishing reminder
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          NEW_MAJOR: ${{ steps.version.outputs.new_major }}
+        run: |
+          {
+            echo "### Marketplace publishing"
+            echo ""
+            echo "Released \`$NEW_VERSION\` and moved \`$NEW_MAJOR\` to match."
+            echo ""
+            echo "If this release should also be published to the GitHub Marketplace, that still requires a one-time manual step:"
+            echo "on the release page, edit the release and check **Publish this release to the GitHub Marketplace**."
+            echo "There is no API/CLI equivalent."
+          } >> "$GITHUB_STEP_SUMMARY"

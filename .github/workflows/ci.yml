@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: Lint action metadata and workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run actionlint
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+          reporter: local
+
+  self-test-pass:
+    name: Self-test (up-to-date fixture passes)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: testdata/fixture/go.mod
+
+      - name: Run go-generate-check against up-to-date fixture
+        uses: ./
+        with:
+          working-directory: testdata/fixture
+          args: ./...
+
+  self-test-fail:
+    name: Self-test (drifted fixture fails)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: testdata/fixture/go.mod
+
+      - name: Make the fixture's generator drift from its committed output
+        run: sed -i 's/fixture generator\./fixture generator (drift)./' testdata/fixture/gen/message_generated.go.tmpl
+
+      - name: Run go-generate-check against drifted fixture
+        id: check
+        continue-on-error: true
+        uses: ./
+        with:
+          working-directory: testdata/fixture
+          args: ./...
+
+      - name: Assert the check failed
+        env:
+          OUTCOME: ${{ steps.check.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::expected go-generate-check to fail when the generator drifts from committed output, but it $OUTCOME"
+            exit 1
+          fi
+          echo "go-generate-check correctly failed on the drifted fixture"
