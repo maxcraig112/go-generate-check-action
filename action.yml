@@ -1,0 +1,43 @@
+name: "Go Generate Check"
+description: "Fails if `go generate` produces changes that are not committed."
+author: "maxcraig112"
+branding:
+  icon: "refresh-cw"
+  color: "blue"
+
+inputs:
+  working-directory:
+    description: "Directory to run go generate and the git checks in."
+    required: false
+    default: "."
+  args:
+    description: "Arguments passed to `go generate`."
+    required: false
+    default: "./..."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run go generate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: go generate ${{ inputs.args }}
+
+    - name: Fail if go generate produced uncommitted changes
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GENERATE_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "::error::go generate produced changes that are not committed. Run 'go generate ${GENERATE_ARGS}' locally and commit the result."
+          echo "--- git status ---"
+          git status --porcelain
+          echo "--- git diff (tracked files) ---"
+          git diff
+          echo "--- untracked files ---"
+          git status --porcelain | awk '$1 == "??" {print $2}'
+          exit 1
+        fi
